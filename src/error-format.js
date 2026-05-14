@@ -40,6 +40,20 @@ function isQuotaError(error) {
   return error?.status === 429 || String(error?.message || "").includes("RESOURCE_EXHAUSTED");
 }
 
+function isTransientGeminiError(error) {
+  const text = String(error?.message || "");
+  return (
+    error?.status === 503 ||
+    text.includes("UNAVAILABLE") ||
+    text.includes("high demand") ||
+    text.includes("overloaded")
+  );
+}
+
+function isGeminiFallbackError(error) {
+  return isQuotaError(error) || isTransientGeminiError(error);
+}
+
 function getRetrySeconds(error) {
   const text = String(error?.message || "");
   const match = text.match(/retryDelay\\":\\"(\\d+)s/);
@@ -90,7 +104,9 @@ module.exports = {
   getUserFacingError,
   isAuthError,
   isDiscordPermissionError,
+  isGeminiFallbackError,
   isNetworkError,
   isQuotaError,
+  isTransientGeminiError,
   sanitizeErrorMessage,
 };

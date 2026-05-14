@@ -5,13 +5,19 @@ const {
   getUserFacingError,
   isAuthError,
   isDiscordPermissionError,
+  isGeminiFallbackError,
   isNetworkError,
   isQuotaError,
+  isTransientGeminiError,
   sanitizeErrorMessage,
 } = require("../src/error-format");
 
 test("classifies common runtime errors", () => {
   assert.equal(isQuotaError({ status: 429 }), true);
+  assert.equal(isTransientGeminiError({ status: 503 }), true);
+  assert.equal(isTransientGeminiError({ message: "UNAVAILABLE: high demand" }), true);
+  assert.equal(isGeminiFallbackError({ status: 429 }), true);
+  assert.equal(isGeminiFallbackError({ status: 503 }), true);
   assert.equal(isAuthError({ status: 403 }), true);
   assert.equal(isDiscordPermissionError({ code: 50013 }), true);
   assert.equal(isNetworkError(new Error("fetch failed")), true);

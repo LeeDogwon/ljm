@@ -1,7 +1,7 @@
 const fs = require("node:fs/promises");
 
 const { generateGroqFallback } = require("./groq-fallback");
-const { isQuotaError } = require("./error-format");
+const { isGeminiFallbackError } = require("./error-format");
 
 function createAgent({
   ai,
@@ -103,11 +103,11 @@ function createAgent({
       return response;
     } catch (error) {
       await recordApiUsage({ request, error, ok: false });
-      if (!isQuotaError(error)) {
+      if (!isGeminiFallbackError(error)) {
         throw error;
       }
 
-      console.warn("Gemini quota or rate limit failed. Falling back to Groq.");
+      console.warn("Gemini quota, rate limit, or transient availability failed. Falling back to Groq.");
       try {
         const response = await generateGroqFallback(request);
         await recordApiUsage({
