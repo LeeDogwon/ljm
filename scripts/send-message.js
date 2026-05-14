@@ -1,11 +1,8 @@
-const path = require("node:path");
+const { loadRuntimeEnv, resolveDiscordToken } = require("../src/runtime-config");
 
-const dotenv = require("dotenv");
+loadRuntimeEnv();
 
-dotenv.config();
-dotenv.config({ path: path.join(process.cwd(), ".env.example"), override: false });
-
-const discordToken = process.env.DISCORD_TOKEN;
+const discordToken = resolveDiscordToken();
 const channelId = process.argv[2] || process.env.TEST_CHANNEL_ID;
 const content = process.argv.slice(3).join(" ") || process.env.TEST_MESSAGE;
 

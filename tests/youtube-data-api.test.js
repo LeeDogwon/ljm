@@ -13,10 +13,11 @@ const {
   writeVideoMetadataCache,
 } = require("../src/youtube-data-api");
 
-test("resolves YouTube API key from dedicated or Google env vars", () => {
+test("resolves YouTube API key only from dedicated env var", () => {
   assert.equal(resolveYouTubeApiKey({ YOUTUBE_API_KEY: "yt" }), "yt");
-  assert.equal(resolveYouTubeApiKey({ GOOGLE_API_KEY: "google" }), "google");
-  assert.equal(resolveYouTubeApiKey({ GEMINI_API_KEY: "gemini" }), "gemini");
+  assert.equal(resolveYouTubeApiKey({ GOOGLE_API_KEY: "google" }), "");
+  assert.equal(resolveYouTubeApiKey({ GEMINI_API_KEY: "gemini" }), "");
+  assert.equal(resolveYouTubeApiKey({ GOOGLE_API_KEY: "google", GEMINI_API_KEY: "gemini" }), "");
   assert.equal(isYouTubeDataApiConfigured({}), false);
 });
 

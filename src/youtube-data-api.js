@@ -4,7 +4,7 @@ const VIDEO_METADATA_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const videoMetadataCache = new Map();
 
 function resolveYouTubeApiKey(env = process.env) {
-  return env.YOUTUBE_API_KEY || env.GOOGLE_API_KEY || env.GEMINI_API_KEY || "";
+  return env.YOUTUBE_API_KEY || "";
 }
 
 function isYouTubeDataApiConfigured(env = process.env) {

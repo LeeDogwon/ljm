@@ -1,11 +1,8 @@
-const path = require("node:path");
+const { loadRuntimeEnv, resolveDiscordToken } = require("../src/runtime-config");
 
-const dotenv = require("dotenv");
+loadRuntimeEnv();
 
-dotenv.config();
-dotenv.config({ path: path.join(process.cwd(), ".env.example"), override: false });
-
-const discordToken = process.env.DISCORD_TOKEN;
+const discordToken = resolveDiscordToken();
 const pollMs = Number(process.env.GUILD_POLL_MS || 5000);
 const maxAttempts = Number(process.env.GUILD_POLL_ATTEMPTS || 60);
 

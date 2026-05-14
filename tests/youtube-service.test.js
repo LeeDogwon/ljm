@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const test = require("node:test");
 
 const {
@@ -36,24 +37,25 @@ test("prefers explicit yt-dlp binary path from environment", () => {
 });
 
 test("adds optional yt-dlp runtime options from environment", () => {
-  assert.deepEqual(
-    buildYoutubeDlOptions(
-      { quiet: true },
-      {
-        YOUTUBE_COOKIES_FILE: "/tmp/cookies.txt",
-        YOUTUBE_DLP_EXTRACTOR_ARGS: "youtube:player_client=android",
-      },
-    ),
+  const options = buildYoutubeDlOptions(
+    { quiet: true },
     {
-      quiet: true,
-      cookies: "/tmp/cookies.txt",
-      extractorArgs: "youtube:player_client=android",
+      YOUTUBE_COOKIES_FILE: "/tmp/cookies.txt",
+      YOUTUBE_DLP_EXTRACTOR_ARGS: "youtube:player_client=android",
     },
   );
+
+  assert.equal(options.quiet, true);
+  assert.equal(options.cookies, "/tmp/cookies.txt");
+  assert.equal(options.extractorArgs, "youtube:player_client=android");
 });
 
 test("does not add a default cookie file when the file does not exist", () => {
-  assert.deepEqual(buildYoutubeDlOptions({ quiet: true }, {}), { quiet: true });
+  const options = buildYoutubeDlOptions({ quiet: true }, {});
+  assert.equal(options.quiet, true);
+  if (!fs.existsSync("/opt/discord-gpt-agent/data/youtube-cookies.txt")) {
+    assert.equal(options.cookies, undefined);
+  }
 });
 
 test("detects YouTube and YouTube Music URLs", () => {

@@ -87,8 +87,7 @@ async function getTrackFromUrl(url, requestedBy = null) {
 
 async function getAutoplayTrack(seedTrack, history = []) {
   const context = createHistoryContext([...history, seedTrack].filter(Boolean));
-  const result = await getAutoplayTrackWithContext(seedTrack, context);
-  return result?.track || null;
+  return await getAutoplayTrackWithContext(seedTrack, context);
 }
 
 async function getAutoplayTrackWithContext(seedTrack, context = createHistoryContext()) {

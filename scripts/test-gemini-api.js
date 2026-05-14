@@ -1,15 +1,9 @@
-const path = require("node:path");
-
-const dotenv = require("dotenv");
 const { GoogleGenAI } = require("@google/genai");
+const { loadRuntimeEnv, resolveGeminiApiKey } = require("../src/runtime-config");
 
-dotenv.config();
-dotenv.config({ path: path.join(process.cwd(), ".env.example"), override: false });
+loadRuntimeEnv();
 
-const apiKey =
-  process.env.GEMINI_API_KEY ||
-  process.env.GOOGLE_API_KEY ||
-  process.env.OPENAI_API_KEY;
+const apiKey = resolveGeminiApiKey();
 const model = resolveGeminiModel();
 
 if (!apiKey) {

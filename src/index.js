@@ -1,7 +1,6 @@
 const path = require("node:path");
 const fs = require("node:fs/promises");
 
-const dotenv = require("dotenv");
 const {
   ChannelType,
   Client,
@@ -13,9 +12,9 @@ const { autoExpandCustomEmojiMessage } = require("./emoji-expand");
 const { generateGroqFallback, resolveGroqModel } = require("./groq-fallback");
 const { handleMusicInteraction, syncMusicCommands } = require("./music-commands");
 const { formatLastProviderReport, isLastProviderPrompt } = require("./provider-status");
+const { loadRuntimeEnv, resolveDiscordToken, resolveGeminiApiKey } = require("./runtime-config");
 
-dotenv.config();
-dotenv.config({ path: path.join(process.cwd(), ".env.example"), override: false });
+loadRuntimeEnv();
 
 const KOREAN = {
   wakePhrase: "\uC7AC\uBA85\uC544",
@@ -26,12 +25,10 @@ const KOREAN = {
   noAnswer: "\uB2F5\uBCC0\uC744 \uC0DD\uC131\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
 };
 
-const geminiApiKey =
-  process.env.GEMINI_API_KEY ||
-  process.env.GOOGLE_API_KEY ||
-  process.env.OPENAI_API_KEY;
+const discordToken = resolveDiscordToken();
+const geminiApiKey = resolveGeminiApiKey();
 
-if (!process.env.DISCORD_TOKEN) {
+if (!discordToken) {
   console.error("Missing required environment variable: DISCORD_TOKEN");
   process.exit(1);
 }
@@ -152,7 +149,7 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(discordToken);
 
 function resolveGeminiModel() {
   const candidate = process.env.GEMINI_MODEL || process.env.GOOGLE_MODEL || process.env.OPENAI_MODEL;

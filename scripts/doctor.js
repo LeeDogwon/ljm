@@ -1,16 +1,10 @@
-const path = require("node:path");
-
-const dotenv = require("dotenv");
 const { GoogleGenAI } = require("@google/genai");
+const { loadRuntimeEnv, resolveDiscordToken, resolveGeminiApiKey } = require("../src/runtime-config");
 
-dotenv.config();
-dotenv.config({ path: path.join(process.cwd(), ".env.example"), override: false });
+loadRuntimeEnv();
 
-const discordToken = process.env.DISCORD_TOKEN;
-const geminiApiKey =
-  process.env.GEMINI_API_KEY ||
-  process.env.GOOGLE_API_KEY ||
-  process.env.OPENAI_API_KEY;
+const discordToken = resolveDiscordToken();
+const geminiApiKey = resolveGeminiApiKey();
 const geminiModel = resolveGeminiModel();
 const enableGoogleSearch = process.env.ENABLE_GOOGLE_SEARCH !== "0";
 
