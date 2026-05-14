@@ -80,6 +80,12 @@ DISCORD_ALLOWED_CHANNEL_IDS=1499319149116002376,692737843604488216
 ENABLE_GOOGLE_SEARCH=1
 GEMINI_DAILY_REQUEST_LIMIT=20
 GEMINI_AUTH_COOLDOWN_MS=600000
+MUSIC_MAX_TRACK_DURATION_SECONDS=900
+MUSIC_MIN_TRACK_DURATION_SECONDS=60
+MUSIC_HISTORY_LIMIT=20
+MUSIC_MAX_STREAM_FAILURES=3
+MUSIC_AUTOPLAY_SEARCH_FALLBACK=1
+YOUTUBE_DL_BINARY_PATH=
 ```
 
 주요 값:
@@ -97,6 +103,12 @@ GEMINI_AUTH_COOLDOWN_MS=600000
 - `DISCORD_ALLOWED_CHANNEL_IDS`: 비워두면 모든 채널에서 반응하고, 쉼표로 채널 ID를 넣으면 해당 채널만 허용합니다.
 - `ENABLE_GOOGLE_SEARCH`: `0`이면 Gemini Google Search grounding을 끕니다.
 - `GEMINI_DAILY_REQUEST_LIMIT`: 로컬 사용량 추정에 쓰는 일일 요청 한도입니다.
+- `MUSIC_MAX_TRACK_DURATION_SECONDS`: 재생 가능한 곡의 최대 길이입니다. 기본값은 900초입니다.
+- `MUSIC_MIN_TRACK_DURATION_SECONDS`: 재생 가능한 곡의 최소 길이입니다. 기본값은 60초입니다.
+- `MUSIC_HISTORY_LIMIT`: 중복 방지를 위해 기억하는 최근 음악 기록 개수입니다.
+- `MUSIC_MAX_STREAM_FAILURES`: 한 곡 스트림 실패 후 다음 후보로 넘어갈 최대 실패 횟수입니다.
+- `MUSIC_AUTOPLAY_SEARCH_FALLBACK`: `0`이면 broad artist fallback search를 끕니다.
+- `YOUTUBE_DL_BINARY_PATH`: 기본 경로 대신 사용할 `yt-dlp` 실행 파일 경로입니다.
 
 ## Discord 설정
 
@@ -283,6 +295,7 @@ YouTube Data API가 실패하거나 결과가 없으면 로컬 YouTube 검색 �
 npm run check
 npm test
 npm run doctor
+npm run doctor:music
 npm run test:gemini
 npm run channels
 npm run wait:guild
@@ -291,6 +304,7 @@ npm run wait:guild
 - `npm run check`: 문법 검사와 전체 테스트를 실행합니다.
 - `npm test`: 테스트만 실행합니다.
 - `npm run doctor`: Discord token, Gemini key, invite URL, Gemini 응답을 점검합니다.
+- `npm run doctor:music`: Discord/Gemini 인증 없이 `yt-dlp`, FFmpeg, YouTube/Last.fm 음악 설정을 점검합니다.
 - `npm run test:gemini`: Gemini plain/search 요청을 직접 테스트합니다.
 - `npm run channels`: 봇이 접근 가능한 guild/channel 목록을 출력합니다.
 - `npm run wait:guild`: 봇이 guild에 들어올 때까지 polling합니다.
@@ -315,6 +329,7 @@ sudo journalctl -u discord-gpt-agent -f
 설치 스크립트가 하는 일:
 
 - Node.js가 없으면 Node 22를 설치합니다.
+- FFmpeg를 설치합니다.
 - `yt-dlp`와 관련 플러그인을 설치합니다.
 - 앱을 `/opt/discord-gpt-agent`로 복사합니다.
 - `npm ci --omit=dev`로 운영 의존성을 설치합니다.
@@ -340,7 +355,14 @@ sudo journalctl -u discord-gpt-agent -f
 ./deploy/ops.sh tail
 ./deploy/ops.sh doctor
 ./deploy/ops.sh restart
+./deploy/ops.sh restart-tail
+./deploy/ops.sh check-ytdlp
+./deploy/ops.sh update-ytdlp
 ```
+
+- `restart-tail`: 서비스를 재시작한 뒤 최근 journal 로그를 보여줍니다.
+- `check-ytdlp`: `yt-dlp` 경로/버전과 FFmpeg 설치 여부를 출력합니다.
+- `update-ytdlp`: `/usr/local/bin/yt-dlp`를 안전하게 다시 내려받고 실행 권한을 유지합니다.
 
 ## GitHub Actions CI
 

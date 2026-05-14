@@ -1,18 +1,27 @@
 const path = require("node:path");
-const fs = require("node:fs/promises");
 
 const {
-  ChannelType,
   Client,
   GatewayIntentBits,
   Partials,
 } = require("discord.js");
 const { GoogleGenAI } = require("@google/genai");
+const { createAgent } = require("./agent");
+const {
+  buildChannelContext,
+  createPromptExtractor,
+  getChannelName,
+  splitDiscordMessage,
+} = require("./channel-context");
 const { autoExpandCustomEmojiMessage } = require("./emoji-expand");
-const { generateGroqFallback, resolveGroqModel } = require("./groq-fallback");
+const { getUserFacingError } = require("./error-format");
+const { resolveGroqModel } = require("./groq-fallback");
+const { addMemoryItem, createMemoryStore, formatMemory } = require("./memory-store");
 const { handleMusicInteraction, syncMusicCommands } = require("./music-commands");
 const { formatLastProviderReport, isLastProviderPrompt } = require("./provider-status");
 const { loadRuntimeEnv, resolveDiscordToken, resolveGeminiApiKey } = require("./runtime-config");
+const { createUsageStore } = require("./usage-store");
+const { isAuthError, isQuotaError, sanitizeErrorMessage } = require("./error-format");
 
 loadRuntimeEnv();
 
@@ -54,13 +63,42 @@ const memoryPath = path.join(dataDir, "memory.json");
 const usagePath = path.join(dataDir, "usage.json");
 const dailyRequestLimit = Number(process.env.GEMINI_DAILY_REQUEST_LIMIT || 20);
 const authCooldownMs = Number(process.env.GEMINI_AUTH_COOLDOWN_MS || 10 * 60 * 1000);
-const fileTaskQueues = new Map();
 const allowedChannelIds = new Set(
   (process.env.DISCORD_ALLOWED_CHANNEL_IDS || "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),
 );
+
+const memoryStore = createMemoryStore(memoryPath);
+const usageStore = createUsageStore({
+  usagePath,
+  model,
+  dailyRequestLimit,
+  isAuthError,
+  isQuotaError,
+  sanitizeErrorMessage,
+});
+const extractPrompt = createPromptExtractor({
+  wakePhrase,
+  calledOnly: KOREAN.calledOnly,
+});
+const { askAgent } = createAgent({
+  ai,
+  authCooldownMs,
+  currentContextPath,
+  enableGoogleSearch,
+  formatMemory,
+  groqModel,
+  memoryStore,
+  model,
+  personaPath,
+  recordApiUsage: usageStore.recordApiUsage,
+  sourcesPath,
+  usageStore,
+  wakePhrase,
+  strings: KOREAN,
+});
 
 const client = new Client({
   intents: [
@@ -132,7 +170,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const context = await buildChannelContext(message);
+    const context = await buildChannelContext(message, maxContextMessages);
     const answer = await askAgent({
       guildId: message.guildId || "dm",
       userId: message.author.id,
@@ -146,7 +184,7 @@ client.on("messageCreate", async (message) => {
     console.log(`Reply sent to message ${message.id}`);
   } catch (error) {
     console.error(error);
-    await safeReply(message, getUserFacingError(error));
+    await safeReply(message, getUserFacingError(error, KOREAN.error));
   }
 });
 
@@ -165,170 +203,6 @@ function isAllowedChannel(channelId) {
   return allowedChannelIds.size === 0 || allowedChannelIds.has(channelId);
 }
 
-function extractPrompt(content) {
-  const trimmed = content.trim();
-  const lowerContent = trimmed.toLocaleLowerCase("ko-KR");
-  const lowerWakePhrase = wakePhrase.toLocaleLowerCase("ko-KR");
-
-  if (lowerContent === lowerWakePhrase) {
-    return KOREAN.calledOnly;
-  }
-
-  if (!lowerContent.startsWith(lowerWakePhrase)) return null;
-
-  return (
-    trimmed
-      .slice(wakePhrase.length)
-      .replace(/^[\s,:;!?-]+/, "")
-      .trim() || KOREAN.calledOnly
-  );
-}
-
-async function buildChannelContext(message) {
-  if (!message.channel || maxContextMessages <= 0) return [];
-  if (message.channel.type === ChannelType.DM) return [];
-
-  const fetched = await message.channel.messages.fetch({
-    limit: Math.min(maxContextMessages + 1, 50),
-  });
-
-  return Array.from(fetched.values())
-    .filter((item) => item.id !== message.id)
-    .filter((item) => item.content && !item.author.bot)
-    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-    .map((item) => ({
-      author: item.member?.displayName || item.author.displayName || item.author.username,
-      content: item.content,
-    }));
-}
-
-async function askAgent({ guildId, userId, userName, channelName, prompt, context }) {
-  const contextText = context.length
-    ? context.map((item) => `${item.author}: ${item.content}`).join("\n")
-    : KOREAN.noContext;
-  const needsSearch = shouldUseGoogleSearch(prompt);
-  const needsReferenceContext = shouldUseReferenceContext(prompt);
-  const [persona, sources, currentContext, memory] = await Promise.all([
-    readTextFile(personaPath),
-    needsReferenceContext ? readTextFile(sourcesPath) : Promise.resolve("Not included for this request."),
-    needsSearch || needsReferenceContext
-      ? readTextFile(currentContextPath)
-      : Promise.resolve("Not included for this request."),
-    readMemory(),
-  ]);
-  const memoryText = formatMemory(memory, guildId, userId);
-
-  const request = {
-    model,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            text: [
-              "[Persona]",
-              persona,
-              "",
-              "[Reference notes]",
-              sources,
-              "",
-              "[Current context snapshot]",
-              currentContext,
-              "",
-              "[Long-term memory]",
-              memoryText,
-              "",
-              "[Runtime rules]",
-              `Current date: ${new Date().toISOString()}`,
-              `The application already verified that the user called you with the wake phrase "${wakePhrase}".`,
-              "The user request below is the text after that wake phrase.",
-              "Never say that the wake phrase was not used.",
-              "Use Google Search grounding for current facts, news, people, prices, schedules, politics, law, economy, technology trends, and any fact that may have changed.",
-              "When Google Search grounding is available, prefer it over memory for factual recency.",
-              "If Search grounding does not provide enough evidence, say that live verification is still needed.",
-              "Use the recent chat context only when it is relevant.",
-              "Do not repeat private or sensitive details unless necessary.",
-              "Answer in Korean, concisely, and in a Discord-friendly format.",
-              "Default to 3 short sentences or fewer unless the user asks for detail.",
-              "",
-              `Channel: ${channelName}`,
-              `Caller: ${userName}`,
-              "",
-              "[Recent chat context]",
-              contextText,
-              "",
-              "[User request]",
-              prompt,
-            ].join("\n"),
-          },
-        ],
-      },
-    ],
-  };
-
-  if (enableGoogleSearch && needsSearch) {
-    request.config = {
-      tools: [{ googleSearch: {} }],
-    };
-  }
-
-  const response = await generateWithFallback(request);
-
-  return withGroundingSources(response.text?.trim() || KOREAN.noAnswer, response);
-}
-
-async function generateWithFallback(request) {
-  await assertApiNotInAuthCooldown();
-
-  try {
-    const response = await ai.models.generateContent(request);
-    await recordApiUsage({ request, response, ok: true });
-    return response;
-  } catch (error) {
-    await recordApiUsage({ request, error, ok: false });
-    if (!isQuotaError(error)) {
-      throw error;
-    }
-
-    console.warn("Gemini quota or rate limit failed. Falling back to Groq.");
-    try {
-      const response = await generateGroqFallback(request);
-      await recordApiUsage({
-        request: { ...request, model: response.model, provider: "groq" },
-        response,
-        ok: true,
-      });
-      return response;
-    } catch (groqError) {
-      await recordApiUsage({
-        request: { ...request, model: groqModel, provider: "groq" },
-        error: groqError,
-        ok: false,
-      });
-      throw groqError;
-    }
-  }
-}
-
-async function assertApiNotInAuthCooldown() {
-  const usage = await readUsage();
-  const lastError = usage.lastError;
-  if (!lastError || lastError.type !== "auth") return;
-
-  const lastAt = Date.parse(lastError.at || "");
-  if (!Number.isFinite(lastAt)) return;
-
-  const elapsed = Date.now() - lastAt;
-  if (elapsed >= authCooldownMs) return;
-
-  const error = new Error(
-    `Gemini API auth cooldown active after ${lastError.status}: ${lastError.message}`,
-  );
-  error.status = lastError.status || 403;
-  error.code = "AUTH_COOLDOWN";
-  throw error;
-}
-
 async function handleUsageCommand(prompt) {
   const normalized = prompt.trim().toLocaleLowerCase("ko-KR");
   const asksUsage =
@@ -342,8 +216,8 @@ async function handleUsageCommand(prompt) {
 
   if (!asksUsage) return null;
 
-  const usage = await readUsage();
-  return formatUsageReport(usage);
+  const usage = await usageStore.readUsage();
+  return usageStore.formatUsageReport(usage);
 }
 
 function handleLocalHelpCommand(prompt) {
@@ -388,7 +262,7 @@ function handleLocalHelpCommand(prompt) {
 async function handleLastProviderCommand(prompt) {
   if (!isLastProviderPrompt(prompt)) return null;
 
-  const usage = await readUsage();
+  const usage = await usageStore.readUsage();
   return formatLastProviderReport(usage.lastSuccess);
 }
 
@@ -398,12 +272,12 @@ async function handleMemoryCommand(message, prompt) {
   const userId = message.author.id;
 
   if (["기억 보여줘", "기억 목록", "학습 목록"].includes(normalized)) {
-    const memory = await readMemory();
+    const memory = await memoryStore.readMemory();
     return formatMemory(memory, guildId, userId);
   }
 
   if (["기억 삭제", "학습 삭제", "기억 초기화"].includes(normalized)) {
-    await updateMemory((memory) => {
+    await memoryStore.updateMemory((memory) => {
       delete memory.serverInstructions[guildId];
     });
     return "이 서버에서 배운 지침을 초기화했습니다.";
@@ -417,13 +291,13 @@ async function handleMemoryCommand(message, prompt) {
   if (!serverInstruction && !userInstruction) return null;
 
   if (serverInstruction) {
-    await updateMemory((memory) => {
+    await memoryStore.updateMemory((memory) => {
       addMemoryItem(memory.serverInstructions, guildId, serverInstruction, message.author.username);
     });
     return `이 서버 지침으로 기억했습니다: ${serverInstruction}`;
   }
 
-  await updateMemory((memory) => {
+  await memoryStore.updateMemory((memory) => {
     addMemoryItem(memory.userInstructions, userId, userInstruction, message.author.username);
   });
   return `개인 지침으로 기억했습니다: ${userInstruction}`;
@@ -434,342 +308,11 @@ function stripPrefix(text, prefixes) {
   return prefix ? text.slice(prefix.length).trim() : null;
 }
 
-function addMemoryItem(bucket, key, text, by) {
-  const items = bucket[key] || [];
-  items.push({
-    text,
-    by,
-    at: new Date().toISOString(),
-  });
-  bucket[key] = items.slice(-30);
-}
-
-async function readMemory() {
-  try {
-    const raw = await fs.readFile(memoryPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      serverInstructions: parsed.serverInstructions || {},
-      userInstructions: parsed.userInstructions || {},
-    };
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return { serverInstructions: {}, userInstructions: {} };
-  }
-}
-
-async function readUsage() {
-  try {
-    const raw = await fs.readFile(usagePath, "utf8");
-    return normalizeUsage(JSON.parse(raw));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return normalizeUsage({});
-  }
-}
-
-async function writeUsage(usage) {
-  await writeJsonAtomic(usagePath, normalizeUsage(usage));
-}
-
-function normalizeUsage(usage) {
-  return {
-    version: 1,
-    model: usage.model || model,
-    dailyLimit: Number(usage.dailyLimit || dailyRequestLimit),
-    days: usage.days || {},
-    lastError: usage.lastError || null,
-    lastSuccess: usage.lastSuccess || null,
-  };
-}
-
-async function recordApiUsage({ request, response, error, ok }) {
-  await updateUsage((usage) => {
-    const dayKey = getKoreaDateKey();
-    const day = usage.days[dayKey] || {
-      requests: 0,
-      successes: 0,
-      failures: 0,
-      searchRequests: 0,
-      quotaErrors: 0,
-      authErrors: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-    };
-
-    const usageMetadata = response?.usageMetadata || {};
-    const estimatedInputTokens =
-      usageMetadata.promptTokenCount || estimateRequestTokens(request);
-    const outputTokens = usageMetadata.candidatesTokenCount || estimateTextTokens(response?.text || "");
-    const totalTokens = usageMetadata.totalTokenCount || estimatedInputTokens + outputTokens;
-
-    day.requests += 1;
-    day.searchRequests += request.config?.tools ? 1 : 0;
-    day.inputTokens += estimatedInputTokens;
-    day.outputTokens += outputTokens;
-    day.totalTokens += totalTokens;
-
-    if (ok) {
-      day.successes += 1;
-      usage.lastSuccess = {
-        at: new Date().toISOString(),
-        provider: request.provider || "gemini",
-        model: request.model || model,
-      };
-    } else {
-      day.failures += 1;
-      if (isQuotaError(error)) day.quotaErrors += 1;
-      if (isAuthError(error)) day.authErrors += 1;
-      usage.lastError = {
-        at: new Date().toISOString(),
-        type: isQuotaError(error) ? "quota" : isAuthError(error) ? "auth" : "other",
-        status: error?.status || error?.code || "unknown",
-        message: sanitizeErrorMessage(error?.message || String(error || "")),
-      };
-    }
-
-    usage.model = request.model || model;
-    usage.dailyLimit = dailyRequestLimit;
-    usage.days[dayKey] = day;
-  });
-}
-
-function formatUsageReport(usage) {
-  const dayKey = getKoreaDateKey();
-  const day = usage.days[dayKey] || {};
-  const requests = Number(day.requests || 0);
-  const successes = Number(day.successes || 0);
-  const failures = Number(day.failures || 0);
-  const quotaErrors = Number(day.quotaErrors || 0);
-  const totalTokens = Number(day.totalTokens || 0);
-  const limit = Number(usage.dailyLimit || dailyRequestLimit);
-  const remaining = Math.max(0, limit - requests);
-  const avgTokens = requests > 0 ? Math.round(totalTokens / requests) : 0;
-  const lastError = usage.lastError;
-  const lastErrorText = lastError
-    ? `\n최근 오류: ${lastError.type} / ${lastError.status}`
-    : "";
-
-  return [
-    "그건 핵심을 봐야 합니다. 내가 볼 수 있는 건 Gemini가 알려주는 공식 잔여량이 아니라, 이 봇이 직접 기록한 추정치입니다.",
-    `오늘 기록: ${requests}/${limit}회 사용, 남은 대화 약 ${remaining}회`,
-    `성공 ${successes}회, 실패 ${failures}회, 쿼터 오류 ${quotaErrors}회`,
-    `추정 토큰: 총 ${totalTokens}개, 평균 ${avgTokens}개/요청${lastErrorText}`,
-  ].join("\n");
-}
-
-
-function getKoreaDateKey() {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return formatter.format(new Date());
-}
-
-function estimateRequestTokens(request) {
-  const text = JSON.stringify(request.contents || "");
-  return estimateTextTokens(text);
-}
-
-function estimateTextTokens(text) {
-  if (!text) return 0;
-  return Math.ceil(String(text).length / 3);
-}
-
-async function writeMemory(memory) {
-  await writeJsonAtomic(memoryPath, memory);
-}
-
-async function updateMemory(mutator) {
-  return enqueueFileTask(memoryPath, async () => {
-    const memory = await readMemory();
-    const result = await mutator(memory);
-    await writeMemory(memory);
-    return result;
-  });
-}
-
-async function updateUsage(mutator) {
-  return enqueueFileTask(usagePath, async () => {
-    const usage = await readUsage();
-    const result = await mutator(usage);
-    await writeUsage(usage);
-    return result;
-  });
-}
-
-function enqueueFileTask(filePath, task) {
-  const previous = fileTaskQueues.get(filePath) || Promise.resolve();
-  const next = previous.catch(() => {}).then(task);
-  fileTaskQueues.set(filePath, next);
-  next
-    .finally(() => {
-      if (fileTaskQueues.get(filePath) === next) {
-        fileTaskQueues.delete(filePath);
-      }
-    })
-    .catch(() => {});
-  return next;
-}
-
-async function writeJsonAtomic(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = path.join(
-    path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-  );
-
-  try {
-    await fs.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await fs.rename(tmpPath, filePath);
-  } catch (error) {
-    await fs.unlink(tmpPath).catch(() => {});
-    throw error;
-  }
-}
-
-async function readTextFile(filePath) {
-  try {
-    return await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return "";
-  }
-}
-
-function formatMemory(memory, guildId, userId) {
-  const serverItems = memory.serverInstructions[guildId] || [];
-  const userItems = memory.userInstructions[userId] || [];
-  const lines = [];
-
-  if (serverItems.length) {
-    lines.push("[Server instructions]");
-    lines.push(...serverItems.map((item) => `- ${item.text}`));
-  }
-
-  if (userItems.length) {
-    lines.push("[User instructions]");
-    lines.push(...userItems.map((item) => `- ${item.text}`));
-  }
-
-  return lines.length ? lines.join("\n") : "저장된 장기 기억이 없습니다.";
-}
-
-function getChannelName(channel) {
-  if (!channel) return "unknown";
-  if (channel.type === ChannelType.DM) return "DM";
-  return channel.name || channel.id;
-}
-
 async function replyInChunks(message, text) {
-  const chunks = splitDiscordMessage(text);
+  const chunks = splitDiscordMessage(text, KOREAN.emptyReply);
   for (const chunk of chunks) {
     await message.reply({ content: chunk, allowedMentions: { repliedUser: false } });
   }
-}
-
-function splitDiscordMessage(text) {
-  const limit = 1900;
-  const normalized = text.trim() || KOREAN.emptyReply;
-  const chunks = [];
-
-  for (let index = 0; index < normalized.length; index += limit) {
-    chunks.push(normalized.slice(index, index + limit));
-  }
-
-  return chunks;
-}
-
-function withGroundingSources(text, response) {
-  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const sources = chunks
-    .map((chunk) => chunk.web)
-    .filter((web) => web?.uri)
-    .map((web) => ({
-      title: web.title || "source",
-      uri: web.uri,
-    }));
-
-  const uniqueSources = [];
-  const seen = new Set();
-  for (const source of sources) {
-    if (seen.has(source.uri)) continue;
-    seen.add(source.uri);
-    uniqueSources.push(source);
-    if (uniqueSources.length >= 3) break;
-  }
-
-  if (!uniqueSources.length) return text;
-
-  const sourceText = uniqueSources
-    .map((source, index) => `${index + 1}. ${source.title}: ${source.uri}`)
-    .join("\n");
-
-  return `${text}\n\n출처:\n${sourceText}`;
-}
-
-function shouldUseGoogleSearch(prompt) {
-  const normalized = prompt.toLocaleLowerCase("ko-KR");
-  const keywords = [
-    "최신",
-    "오늘",
-    "요즘",
-    "현재",
-    "지금",
-    "최근",
-    "뉴스",
-    "속보",
-    "가격",
-    "주가",
-    "환율",
-    "날씨",
-    "일정",
-    "대통령",
-    "총리",
-    "장관",
-    "법",
-    "규정",
-    "여론조사",
-    "지지율",
-    "경제",
-    "ai",
-    "인공지능",
-    "gemini",
-    "gpt",
-  ];
-
-  return keywords.some((keyword) => normalized.includes(keyword));
-}
-
-function shouldUseReferenceContext(prompt) {
-  const normalized = prompt.toLocaleLowerCase("ko-KR");
-  const keywords = [
-    "정치",
-    "대통령",
-    "이재명",
-    "민생",
-    "경제",
-    "복지",
-    "노동",
-    "지역균형",
-    "행정",
-    "개혁",
-    "정책",
-    "공약",
-    "뉴스",
-    "토론",
-    "찬반",
-    "반박",
-    "ai",
-    "인공지능",
-    "반도체",
-  ];
-
-  return keywords.some((keyword) => normalized.includes(keyword));
 }
 
 async function safeReply(message, content) {
@@ -778,90 +321,4 @@ async function safeReply(message, content) {
   } catch (error) {
     console.error("Failed to send error reply:", error);
   }
-}
-
-function getUserFacingError(error) {
-  if (isQuotaError(error)) {
-    return buildQuotaFallbackReply(error);
-  }
-
-  if (isAuthError(error)) {
-    return [
-      "AI API 인증에 실패했습니다.",
-      "현재 원인은 Gemini API 프로젝트 접근 거부입니다. 로그상 `PERMISSION_DENIED / Your project has been denied access`가 확인됐습니다.",
-      "방금까지 작동했더라도 Google 쪽에서 프로젝트 접근이 막히면 같은 키로는 generateContent가 전부 실패합니다.",
-      "해결은 Google AI Studio/Cloud에서 해당 프로젝트 접근 상태를 풀거나, 정상 프로젝트의 새 Gemini API 키로 교체하는 것입니다.",
-    ].join("\n");
-  }
-
-  if (isDiscordPermissionError(error)) {
-    return [
-      "Discord 권한 문제로 답장을 보내지 못했습니다.",
-      "이 채널에서 `Send Messages`, `Read Message History`, `View Channel` 권한을 확인해야 합니다.",
-    ].join("\n");
-  }
-
-  if (isNetworkError(error)) {
-    return [
-      "외부 API 연결에 실패했습니다.",
-      "Gemini 또는 Google Search 쪽 네트워크가 불안정하거나, VM의 outbound HTTPS 연결에 문제가 있을 수 있습니다.",
-      "잠시 후 다시 불러주세요.",
-    ].join("\n");
-  }
-
-  const code = error?.status || error?.code || "unknown";
-  const message = sanitizeErrorMessage(error?.message || String(error || ""));
-  if (message) {
-    return `처리 중 오류가 났습니다.\n원인 코드: ${code}\n원인: ${message}`;
-  }
-
-  return KOREAN.error;
-}
-
-function isQuotaError(error) {
-  return error?.status === 429 || String(error?.message || "").includes("RESOURCE_EXHAUSTED");
-}
-
-function getRetrySeconds(error) {
-  const text = String(error?.message || "");
-  const match = text.match(/retryDelay\\":\\"(\\d+)s/);
-  return match ? Number(match[1]) : null;
-}
-
-function buildQuotaFallbackReply(error) {
-  const retrySeconds = getRetrySeconds(error);
-  const retryText = retrySeconds ? `\n재시도 권장: 약 ${retrySeconds}초 뒤` : "";
-  return [
-    "Gemini API 사용량 한도에 걸렸습니다.",
-    "원인: 토큰/요청 쿼터 부족입니다.",
-    "코드 문제가 아니라 현재 API 키의 무료 또는 설정된 사용량 한도를 넘은 상태입니다.",
-    "해결: 잠시 뒤 다시 부르거나, Google AI Studio에서 결제/한도 상향 또는 다른 API 키를 설정해야 합니다.",
-    retryText,
-  ].join("\n");
-}
-
-function isAuthError(error) {
-  const text = String(error?.message || "");
-  return error?.status === 401 || error?.status === 403 || text.includes("API_KEY") || text.includes("PERMISSION_DENIED");
-}
-
-function isDiscordPermissionError(error) {
-  const code = error?.code;
-  const status = error?.status;
-  return code === 50013 || code === 50001 || status === 403;
-}
-
-function isNetworkError(error) {
-  const text = String(error?.message || "");
-  return ["fetch failed", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].some((pattern) =>
-    text.includes(pattern),
-  );
-}
-
-function sanitizeErrorMessage(message) {
-  return message
-    .replace(/AIza[0-9A-Za-z_-]+/g, "[redacted-api-key]")
-    .replace(/gsk_[0-9A-Za-z_-]+/g, "[redacted-api-key]")
-    .replace(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/g, "[redacted-token]")
-    .slice(0, 900);
 }
