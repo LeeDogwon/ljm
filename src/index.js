@@ -54,6 +54,7 @@ const memoryPath = path.join(dataDir, "memory.json");
 const usagePath = path.join(dataDir, "usage.json");
 const dailyRequestLimit = Number(process.env.GEMINI_DAILY_REQUEST_LIMIT || 20);
 const authCooldownMs = Number(process.env.GEMINI_AUTH_COOLDOWN_MS || 10 * 60 * 1000);
+const fileTaskQueues = new Map();
 const allowedChannelIds = new Set(
   (process.env.DISCORD_ALLOWED_CHANNEL_IDS || "")
     .split(",")
@@ -402,9 +403,9 @@ async function handleMemoryCommand(message, prompt) {
   }
 
   if (["기억 삭제", "학습 삭제", "기억 초기화"].includes(normalized)) {
-    const memory = await readMemory();
-    delete memory.serverInstructions[guildId];
-    await writeMemory(memory);
+    await updateMemory((memory) => {
+      delete memory.serverInstructions[guildId];
+    });
     return "이 서버에서 배운 지침을 초기화했습니다.";
   }
 
@@ -415,15 +416,16 @@ async function handleMemoryCommand(message, prompt) {
 
   if (!serverInstruction && !userInstruction) return null;
 
-  const memory = await readMemory();
   if (serverInstruction) {
-    addMemoryItem(memory.serverInstructions, guildId, serverInstruction, message.author.username);
-    await writeMemory(memory);
+    await updateMemory((memory) => {
+      addMemoryItem(memory.serverInstructions, guildId, serverInstruction, message.author.username);
+    });
     return `이 서버 지침으로 기억했습니다: ${serverInstruction}`;
   }
 
-  addMemoryItem(memory.userInstructions, userId, userInstruction, message.author.username);
-  await writeMemory(memory);
+  await updateMemory((memory) => {
+    addMemoryItem(memory.userInstructions, userId, userInstruction, message.author.username);
+  });
   return `개인 지침으로 기억했습니다: ${userInstruction}`;
 }
 
@@ -467,8 +469,7 @@ async function readUsage() {
 }
 
 async function writeUsage(usage) {
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(usagePath, `${JSON.stringify(normalizeUsage(usage), null, 2)}\n`, "utf8");
+  await writeJsonAtomic(usagePath, normalizeUsage(usage));
 }
 
 function normalizeUsage(usage) {
@@ -483,55 +484,55 @@ function normalizeUsage(usage) {
 }
 
 async function recordApiUsage({ request, response, error, ok }) {
-  const usage = await readUsage();
-  const dayKey = getKoreaDateKey();
-  const day = usage.days[dayKey] || {
-    requests: 0,
-    successes: 0,
-    failures: 0,
-    searchRequests: 0,
-    quotaErrors: 0,
-    authErrors: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-  };
-
-  const usageMetadata = response?.usageMetadata || {};
-  const estimatedInputTokens =
-    usageMetadata.promptTokenCount || estimateRequestTokens(request);
-  const outputTokens = usageMetadata.candidatesTokenCount || estimateTextTokens(response?.text || "");
-  const totalTokens = usageMetadata.totalTokenCount || estimatedInputTokens + outputTokens;
-
-  day.requests += 1;
-  day.searchRequests += request.config?.tools ? 1 : 0;
-  day.inputTokens += estimatedInputTokens;
-  day.outputTokens += outputTokens;
-  day.totalTokens += totalTokens;
-
-  if (ok) {
-    day.successes += 1;
-    usage.lastSuccess = {
-      at: new Date().toISOString(),
-      provider: request.provider || "gemini",
-      model: request.model || model,
+  await updateUsage((usage) => {
+    const dayKey = getKoreaDateKey();
+    const day = usage.days[dayKey] || {
+      requests: 0,
+      successes: 0,
+      failures: 0,
+      searchRequests: 0,
+      quotaErrors: 0,
+      authErrors: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
     };
-  } else {
-    day.failures += 1;
-    if (isQuotaError(error)) day.quotaErrors += 1;
-    if (isAuthError(error)) day.authErrors += 1;
-    usage.lastError = {
-      at: new Date().toISOString(),
-      type: isQuotaError(error) ? "quota" : isAuthError(error) ? "auth" : "other",
-      status: error?.status || error?.code || "unknown",
-      message: sanitizeErrorMessage(error?.message || String(error || "")),
-    };
-  }
 
-  usage.model = request.model || model;
-  usage.dailyLimit = dailyRequestLimit;
-  usage.days[dayKey] = day;
-  await writeUsage(usage);
+    const usageMetadata = response?.usageMetadata || {};
+    const estimatedInputTokens =
+      usageMetadata.promptTokenCount || estimateRequestTokens(request);
+    const outputTokens = usageMetadata.candidatesTokenCount || estimateTextTokens(response?.text || "");
+    const totalTokens = usageMetadata.totalTokenCount || estimatedInputTokens + outputTokens;
+
+    day.requests += 1;
+    day.searchRequests += request.config?.tools ? 1 : 0;
+    day.inputTokens += estimatedInputTokens;
+    day.outputTokens += outputTokens;
+    day.totalTokens += totalTokens;
+
+    if (ok) {
+      day.successes += 1;
+      usage.lastSuccess = {
+        at: new Date().toISOString(),
+        provider: request.provider || "gemini",
+        model: request.model || model,
+      };
+    } else {
+      day.failures += 1;
+      if (isQuotaError(error)) day.quotaErrors += 1;
+      if (isAuthError(error)) day.authErrors += 1;
+      usage.lastError = {
+        at: new Date().toISOString(),
+        type: isQuotaError(error) ? "quota" : isAuthError(error) ? "auth" : "other",
+        status: error?.status || error?.code || "unknown",
+        message: sanitizeErrorMessage(error?.message || String(error || "")),
+      };
+    }
+
+    usage.model = request.model || model;
+    usage.dailyLimit = dailyRequestLimit;
+    usage.days[dayKey] = day;
+  });
 }
 
 function formatUsageReport(usage) {
@@ -580,8 +581,55 @@ function estimateTextTokens(text) {
 }
 
 async function writeMemory(memory) {
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(memoryPath, `${JSON.stringify(memory, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(memoryPath, memory);
+}
+
+async function updateMemory(mutator) {
+  return enqueueFileTask(memoryPath, async () => {
+    const memory = await readMemory();
+    const result = await mutator(memory);
+    await writeMemory(memory);
+    return result;
+  });
+}
+
+async function updateUsage(mutator) {
+  return enqueueFileTask(usagePath, async () => {
+    const usage = await readUsage();
+    const result = await mutator(usage);
+    await writeUsage(usage);
+    return result;
+  });
+}
+
+function enqueueFileTask(filePath, task) {
+  const previous = fileTaskQueues.get(filePath) || Promise.resolve();
+  const next = previous.catch(() => {}).then(task);
+  fileTaskQueues.set(filePath, next);
+  next
+    .finally(() => {
+      if (fileTaskQueues.get(filePath) === next) {
+        fileTaskQueues.delete(filePath);
+      }
+    })
+    .catch(() => {});
+  return next;
+}
+
+async function writeJsonAtomic(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+
+  try {
+    await fs.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await fs.rename(tmpPath, filePath);
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
 }
 
 async function readTextFile(filePath) {

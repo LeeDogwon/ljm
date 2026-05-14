@@ -16,7 +16,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 apt-get update
-apt-get install -y ca-certificates curl git rsync unzip
+apt-get install -y ca-certificates curl ffmpeg git rsync unzip
 
 YT_DLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
 case "$(uname -m)" in
@@ -99,7 +99,32 @@ fi
 
 chown "${APP_USER}:${APP_USER}" "${APP_DIR}/data/memory.json" "${APP_DIR}/data/usage.json"
 
-install -m 0644 "${APP_DIR}/deploy/${SERVICE_NAME}.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SERVICE
+[Unit]
+Description=Discord Gemini Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+WorkingDirectory=${APP_DIR}
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node ${APP_DIR}/src/index.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=${APP_DIR}/data ${APP_DIR}/logs
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 
