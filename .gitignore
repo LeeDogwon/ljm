@@ -1,0 +1,14 @@
+node_modules/
+.env
+logs/
+npm-debug.log*
+.env.*
+!.env.example
+!.env.production.example
+*.key
+*.pem
+*.sqlite
+*.db
+*.log
+cookies.txt
+__pycache__/

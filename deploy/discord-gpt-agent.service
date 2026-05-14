@@ -1,0 +1,24 @@
+[Unit]
+Description=Discord Gemini Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/discord-gpt-agent
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/discord-gpt-agent/src/index.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/opt/discord-gpt-agent/data /opt/discord-gpt-agent/logs
+
+[Install]
+WantedBy=multi-user.target

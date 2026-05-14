@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "model": "gemini-2.5-flash",
+  "dailyLimit": 20,
+  "days": {},
+  "lastError": null
+}

@@ -1,0 +1,28 @@
+{
+  "name": "discord-gpt-agent",
+  "version": "1.0.0",
+  "description": "A Discord Gemini agent that wakes up when called with a Korean wake phrase.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/emoji-expand.js && node --check src/groq-fallback.js && node --check src/provider-status.js && node --check src/lastfm-service.js && node --check src/youtube-data-api.js && node --check src/youtube-service.js && node --check src/music-player.js && node --check src/music-commands.js && node --check scripts/doctor.js && node --check scripts/wait-for-guild.js && node --check scripts/list-channels.js && node --check scripts/send-message.js && node --check scripts/test-gemini-api.js && npm test",
+    "doctor": "node scripts/doctor.js",
+    "test": "node --test tests/*.test.js",
+    "test:gemini": "node scripts/test-gemini-api.js",
+    "wait:guild": "node scripts/wait-for-guild.js",
+    "channels": "node scripts/list-channels.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "@distube/ytdl-core": "^4.16.12",
+    "@google/genai": "^2.0.1",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
+    "youtube-dl-exec": "^3.1.6",
+    "youtube-sr": "^4.3.12"
+  }
+}
