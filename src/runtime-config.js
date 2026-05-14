@@ -50,6 +50,17 @@ function resolveGeminiApiKey(env = process.env) {
   return resolveFirstEnvValue(env, ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"]);
 }
 
+function resolveGeminiFallbackApiKeys(env = process.env) {
+  return splitEnvList(resolveEnvValue(env, "GEMINI_FALLBACK_API_KEYS"));
+}
+
+function splitEnvList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 module.exports = {
   isPlaceholderEnvValue,
   loadRuntimeEnv,
@@ -57,4 +68,6 @@ module.exports = {
   resolveEnvValue,
   resolveFirstEnvValue,
   resolveGeminiApiKey,
+  resolveGeminiFallbackApiKeys,
+  splitEnvList,
 };

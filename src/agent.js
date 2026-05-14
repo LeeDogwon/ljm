@@ -8,6 +8,7 @@ function createAgent({
   authCooldownMs,
   currentContextPath,
   enableGoogleSearch,
+  fallbackGeminiAis = [],
   formatMemory,
   groqModel,
   memoryStore,
@@ -107,6 +108,9 @@ function createAgent({
         throw error;
       }
 
+      const geminiResponse = await tryFallbackGeminiApis(request);
+      if (geminiResponse) return geminiResponse;
+
       console.warn("Gemini quota, rate limit, or transient availability failed. Falling back to Groq.");
       try {
         const response = await generateGroqFallback(request);
@@ -125,6 +129,34 @@ function createAgent({
         throw groqError;
       }
     }
+  }
+
+  async function tryFallbackGeminiApis(request) {
+    for (const [index, fallbackAi] of fallbackGeminiAis.entries()) {
+      const provider = `gemini-fallback-${index + 1}`;
+      console.warn(
+        `Gemini quota, rate limit, or transient availability failed. Trying ${provider}.`,
+      );
+
+      try {
+        const response = await fallbackAi.models.generateContent(request);
+        await recordApiUsage({
+          request: { ...request, provider },
+          response,
+          ok: true,
+        });
+        return response;
+      } catch (error) {
+        await recordApiUsage({
+          request: { ...request, provider },
+          error,
+          ok: false,
+        });
+        if (!isGeminiFallbackError(error)) throw error;
+      }
+    }
+
+    return null;
   }
 
   async function assertApiNotInAuthCooldown() {

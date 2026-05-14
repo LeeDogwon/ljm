@@ -9,6 +9,7 @@ const {
   loadRuntimeEnv,
   resolveDiscordToken,
   resolveGeminiApiKey,
+  resolveGeminiFallbackApiKeys,
 } = require("../src/runtime-config");
 
 test("rejects placeholder environment values", () => {
@@ -19,6 +20,10 @@ test("rejects placeholder environment values", () => {
   assert.equal(resolveDiscordToken({ DISCORD_TOKEN: "your_discord_bot_token" }), "");
   assert.equal(resolveGeminiApiKey({ GEMINI_API_KEY: "your_gemini_api_key" }), "");
   assert.equal(resolveGeminiApiKey({ GEMINI_API_KEY: "real-gemini-key" }), "real-gemini-key");
+  assert.deepEqual(
+    resolveGeminiFallbackApiKeys({ GEMINI_FALLBACK_API_KEYS: "key-two, key-three,,key-four" }),
+    ["key-two", "key-three", "key-four"],
+  );
 });
 
 test(".env.example is documentation only and is not loaded at runtime", () => {

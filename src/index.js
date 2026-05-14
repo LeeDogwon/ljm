@@ -19,7 +19,12 @@ const { resolveGroqModel } = require("./groq-fallback");
 const { addMemoryItem, createMemoryStore, formatMemory } = require("./memory-store");
 const { handleMusicInteraction, syncMusicCommands } = require("./music-commands");
 const { formatLastProviderReport, isLastProviderPrompt } = require("./provider-status");
-const { loadRuntimeEnv, resolveDiscordToken, resolveGeminiApiKey } = require("./runtime-config");
+const {
+  loadRuntimeEnv,
+  resolveDiscordToken,
+  resolveGeminiApiKey,
+  resolveGeminiFallbackApiKeys,
+} = require("./runtime-config");
 const { createUsageStore } = require("./usage-store");
 const { isAuthError, isQuotaError, sanitizeErrorMessage } = require("./error-format");
 
@@ -36,6 +41,7 @@ const KOREAN = {
 
 const discordToken = resolveDiscordToken();
 const geminiApiKey = resolveGeminiApiKey();
+const geminiFallbackApiKeys = resolveGeminiFallbackApiKeys();
 
 if (!discordToken) {
   console.error("Missing required environment variable: DISCORD_TOKEN");
@@ -48,6 +54,7 @@ if (!geminiApiKey) {
 }
 
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+const fallbackGeminiAis = geminiFallbackApiKeys.map((apiKey) => new GoogleGenAI({ apiKey }));
 
 const wakePhrase = process.env.WAKE_PHRASE || KOREAN.wakePhrase;
 const model = resolveGeminiModel();
@@ -88,6 +95,7 @@ const { askAgent } = createAgent({
   authCooldownMs,
   currentContextPath,
   enableGoogleSearch,
+  fallbackGeminiAis,
   formatMemory,
   groqModel,
   memoryStore,
@@ -115,6 +123,7 @@ client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Wake phrase: ${wakePhrase}`);
   console.log(`Gemini model: ${model}`);
+  console.log(`Gemini fallback API keys: ${fallbackGeminiAis.length}`);
   console.log(`Groq fallback model: ${groqModel}`);
   console.log(`Google Search grounding: ${enableGoogleSearch ? "on" : "off"}`);
   await syncMusicCommands(client);
